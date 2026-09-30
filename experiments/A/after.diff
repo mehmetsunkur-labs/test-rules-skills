@@ -1,0 +1,362 @@
+diff --git a/src/server/app.ts b/src/server/app.ts
+index cc44ddf..1bb4506 100644
+--- a/src/server/app.ts
++++ b/src/server/app.ts
+@@ -3,6 +3,7 @@ import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox'
+ import type { Db } from './db.js'
+ import { errorHandler } from './errors.js'
+ import { authPlugin } from './plugins/auth.js'
++import { feedbackRoutes } from './routes/feedback.js'
+ import { goalRoutes } from './routes/goals.js'
+ import { legacyUserRoutes } from './routes/legacy/users.js'
+ 
+@@ -26,6 +27,7 @@ export async function buildApp({ db, logger = true }: AppOptions): Promise<Fasti
+   app.setErrorHandler(errorHandler)
+   await app.register(authPlugin)
+   await app.register(goalRoutes, { prefix: '/goals' })
++  await app.register(feedbackRoutes, { prefix: '/feedback' })
+   await app.register(legacyUserRoutes, { prefix: '/users' })
+   return app
+ }
+diff --git a/src/server/repositories/feedback-repository.ts b/src/server/repositories/feedback-repository.ts
+new file mode 100644
+index 0000000..9d72a69
+--- /dev/null
++++ b/src/server/repositories/feedback-repository.ts
+@@ -0,0 +1,67 @@
++import type { Db } from '../db.js'
++
++export type FeedbackVisibility = 'private' | 'shared'
++
++export interface Feedback {
++  id: string
++  companyId: string
++  authorId: string
++  recipientId: string
++  body: string
++  visibility: FeedbackVisibility
++  createdAt: string
++}
++
++export interface NewFeedback {
++  authorId: string
++  recipientId: string
++  body: string
++  visibility: FeedbackVisibility
++}
++
++interface FeedbackRow {
++  id: string
++  company_id: string
++  author_id: string
++  recipient_id: string
++  body: string
++  visibility: FeedbackVisibility
++  created_at: Date
++}
++
++const COLUMNS = 'id, company_id, author_id, recipient_id, body, visibility, created_at'
++
++function toFeedback(row: FeedbackRow): Feedback {
++  return {
++    id: row.id,
++    companyId: row.company_id,
++    authorId: row.author_id,
++    recipientId: row.recipient_id,
++    body: row.body,
++    visibility: row.visibility,
++    createdAt: row.created_at.toISOString()
++  }
++}
++
++export async function findFeedbackById(db: Db, companyId: string, id: string): Promise<Feedback | undefined> {
++  const { rows } = await db.query<FeedbackRow>(`SELECT ${COLUMNS} FROM feedback WHERE company_id = $1 AND id = $2`, [
++    companyId,
++    id
++  ])
++  return rows[0] && toFeedback(rows[0])
++}
++
++/**
++ * Inserts feedback only if the recipient belongs to the same company.
++ * Returns undefined when the recipient is not found in `companyId`.
++ */
++export async function createFeedback(db: Db, companyId: string, input: NewFeedback): Promise<Feedback | undefined> {
++  const { rows } = await db.query<FeedbackRow>(
++    `INSERT INTO feedback (company_id, author_id, recipient_id, body, visibility)
++     SELECT $1, $2, $3, $4, $5
++     WHERE EXISTS (SELECT 1 FROM users WHERE company_id = $1 AND id = $3)
++     RETURNING ${COLUMNS}`,
++    [companyId, input.authorId, input.recipientId, input.body, input.visibility]
++  )
++  return rows[0] && toFeedback(rows[0])
++}
+diff --git a/src/server/routes/feedback.test.ts b/src/server/routes/feedback.test.ts
+new file mode 100644
+index 0000000..1e919fb
+--- /dev/null
++++ b/src/server/routes/feedback.test.ts
+@@ -0,0 +1,186 @@
++import { describe, expect, it } from 'vitest'
++import { buildApp } from '../app.js'
++import type { Db } from '../db.js'
++
++const COMPANY_A = '11111111-1111-4111-8111-111111111111'
++const COMPANY_B = '22222222-2222-4222-8222-222222222222'
++const AUTHOR = '33333333-3333-4333-8333-333333333333'
++const RECIPIENT = '55555555-5555-4555-8555-555555555555'
++const OTHER_USER = '66666666-6666-4666-8666-666666666666'
++const FEEDBACK_ID = '44444444-4444-4444-8444-444444444444'
++const NEW_ID = '77777777-7777-4777-8777-777777777777'
++
++interface UserRow {
++  id: string
++  company_id: string
++}
++
++function fakeDb(feedbackRows: Record<string, unknown>[], users: UserRow[] = []): Db {
++  return {
++    query: (async (sql: string, params: unknown[]) => {
++      if (sql.trimStart().startsWith('INSERT')) {
++        const [companyId, authorId, recipientId, body, visibility] = params
++        const recipientInCompany = users.some((u) => u.company_id === companyId && u.id === recipientId)
++        if (!recipientInCompany) return { rows: [] }
++        return {
++          rows: [
++            {
++              id: NEW_ID,
++              company_id: companyId,
++              author_id: authorId,
++              recipient_id: recipientId,
++              body,
++              visibility,
++              created_at: new Date('2026-02-01T00:00:00Z')
++            }
++          ]
++        }
++      }
++      return { rows: feedbackRows.filter((r) => r.company_id === params[0] && r.id === params[1]) }
++    }) as unknown as Db['query']
++  }
++}
++
++function feedbackRow(visibility: 'private' | 'shared'): Record<string, unknown> {
++  return {
++    id: FEEDBACK_ID,
++    company_id: COMPANY_A,
++    author_id: AUTHOR,
++    recipient_id: RECIPIENT,
++    body: 'Great presentation',
++    visibility,
++    created_at: new Date('2026-01-01T00:00:00Z')
++  }
++}
++
++function bearer(userId: string, companyId: string, role: 'employee' | 'manager' | 'admin' = 'employee'): string {
++  return `Bearer ${userId}:${companyId}:${role}`
++}
++
++describe('GET /feedback/:id', () => {
++  it('returns private feedback to its recipient without internal columns', async () => {
++    const app = await buildApp({ db: fakeDb([feedbackRow('private')]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/feedback/${FEEDBACK_ID}`,
++      headers: { authorization: bearer(RECIPIENT, COMPANY_A) }
++    })
++    expect(res.statusCode).toBe(200)
++    const json = res.json()
++    expect(json).toMatchObject({ id: FEEDBACK_ID, authorId: AUTHOR, recipientId: RECIPIENT, visibility: 'private' })
++    expect(json).not.toHaveProperty('companyId')
++  })
++
++  it('returns shared feedback to any user in the same company', async () => {
++    const app = await buildApp({ db: fakeDb([feedbackRow('shared')]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/feedback/${FEEDBACK_ID}`,
++      headers: { authorization: bearer(OTHER_USER, COMPANY_A) }
++    })
++    expect(res.statusCode).toBe(200)
++  })
++
++  it('returns private feedback to an admin of the same company', async () => {
++    const app = await buildApp({ db: fakeDb([feedbackRow('private')]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/feedback/${FEEDBACK_ID}`,
++      headers: { authorization: bearer(OTHER_USER, COMPANY_A, 'admin') }
++    })
++    expect(res.statusCode).toBe(200)
++  })
++
++  it('returns 403 for private feedback when the caller is neither author, recipient nor admin', async () => {
++    const app = await buildApp({ db: fakeDb([feedbackRow('private')]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/feedback/${FEEDBACK_ID}`,
++      headers: { authorization: bearer(OTHER_USER, COMPANY_A, 'manager') }
++    })
++    expect(res.statusCode).toBe(403)
++  })
++
++  it('returns 404 for feedback from another company', async () => {
++    const app = await buildApp({ db: fakeDb([feedbackRow('shared')]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/feedback/${FEEDBACK_ID}`,
++      headers: { authorization: bearer(AUTHOR, COMPANY_B, 'admin') }
++    })
++    expect(res.statusCode).toBe(404)
++  })
++
++  it('returns 400 for a non-uuid id', async () => {
++    const app = await buildApp({ db: fakeDb([]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: '/feedback/not-a-uuid',
++      headers: { authorization: bearer(AUTHOR, COMPANY_A) }
++    })
++    expect(res.statusCode).toBe(400)
++  })
++})
++
++describe('POST /feedback', () => {
++  const users: UserRow[] = [{ id: RECIPIENT, company_id: COMPANY_A }]
++
++  it('creates private feedback authored by the caller by default', async () => {
++    const app = await buildApp({ db: fakeDb([], users), logger: false })
++    const res = await app.inject({
++      method: 'POST',
++      url: '/feedback',
++      headers: { authorization: bearer(AUTHOR, COMPANY_A) },
++      payload: { recipientId: RECIPIENT, body: 'Thanks for the help' }
++    })
++    expect(res.statusCode).toBe(201)
++    const json = res.json()
++    expect(json).toMatchObject({ id: NEW_ID, authorId: AUTHOR, recipientId: RECIPIENT, visibility: 'private' })
++    expect(json).not.toHaveProperty('companyId')
++  })
++
++  it('returns 400 for an empty body', async () => {
++    const app = await buildApp({ db: fakeDb([], users), logger: false })
++    const res = await app.inject({
++      method: 'POST',
++      url: '/feedback',
++      headers: { authorization: bearer(AUTHOR, COMPANY_A) },
++      payload: { recipientId: RECIPIENT, body: '' }
++    })
++    expect(res.statusCode).toBe(400)
++  })
++
++  it('returns 400 for an unknown visibility', async () => {
++    const app = await buildApp({ db: fakeDb([], users), logger: false })
++    const res = await app.inject({
++      method: 'POST',
++      url: '/feedback',
++      headers: { authorization: bearer(AUTHOR, COMPANY_A) },
++      payload: { recipientId: RECIPIENT, body: 'Hi', visibility: 'public' }
++    })
++    expect(res.statusCode).toBe(400)
++  })
++
++  it('ignores authorId and companyId in the body and uses the caller identity', async () => {
++    const app = await buildApp({ db: fakeDb([], users), logger: false })
++    const res = await app.inject({
++      method: 'POST',
++      url: '/feedback',
++      headers: { authorization: bearer(AUTHOR, COMPANY_A) },
++      payload: { recipientId: RECIPIENT, body: 'Hi', authorId: OTHER_USER, companyId: COMPANY_B }
++    })
++    expect(res.statusCode).toBe(201)
++    expect(res.json()).toMatchObject({ authorId: AUTHOR })
++  })
++
++  it('returns 404 when the recipient belongs to another company', async () => {
++    const app = await buildApp({ db: fakeDb([], users), logger: false })
++    const res = await app.inject({
++      method: 'POST',
++      url: '/feedback',
++      headers: { authorization: bearer(AUTHOR, COMPANY_B) },
++      payload: { recipientId: RECIPIENT, body: 'Hi' }
++    })
++    expect(res.statusCode).toBe(404)
++  })
++})
+diff --git a/src/server/routes/feedback.ts b/src/server/routes/feedback.ts
+new file mode 100644
+index 0000000..1805956
+--- /dev/null
++++ b/src/server/routes/feedback.ts
+@@ -0,0 +1,71 @@
++import { Type } from '@sinclair/typebox'
++import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
++import { ForbiddenError, NotFoundError } from '../errors.js'
++import type { AuthContext } from '../plugins/auth.js'
++import { createFeedback, findFeedbackById, type Feedback } from '../repositories/feedback-repository.js'
++
++const Visibility = Type.Union([Type.Literal('private'), Type.Literal('shared')])
++
++const FeedbackResponse = Type.Object({
++  id: Type.String({ format: 'uuid' }),
++  authorId: Type.String({ format: 'uuid' }),
++  recipientId: Type.String({ format: 'uuid' }),
++  body: Type.String({ maxLength: 5000 }),
++  visibility: Visibility,
++  createdAt: Type.String({ format: 'date-time' })
++})
++
++const CreateFeedbackBody = Type.Object(
++  {
++    recipientId: Type.String({ format: 'uuid' }),
++    body: Type.String({ minLength: 1, maxLength: 5000 }),
++    visibility: Type.Optional(Visibility)
++  },
++  { additionalProperties: false }
++)
++
++/** Shared feedback is visible company-wide; private feedback only to its author, recipient and admins. */
++export function canViewFeedback(auth: AuthContext, feedback: Feedback): boolean {
++  if (feedback.visibility === 'shared') return true
++  if (auth.role === 'admin') return true
++  return auth.userId === feedback.authorId || auth.userId === feedback.recipientId
++}
++
++export const feedbackRoutes: FastifyPluginAsyncTypebox = async (app) => {
++  app.get(
++    '/:id',
++    {
++      schema: {
++        params: Type.Object({ id: Type.String({ format: 'uuid' }) }),
++        response: { 200: FeedbackResponse }
++      }
++    },
++    async (request) => {
++      const feedback = await findFeedbackById(app.db, request.auth.companyId, request.params.id)
++      if (!feedback) throw new NotFoundError('Feedback')
++      if (!canViewFeedback(request.auth, feedback)) throw new ForbiddenError()
++      return feedback
++    }
++  )
++
++  app.post(
++    '/',
++    {
++      schema: {
++        body: CreateFeedbackBody,
++        response: { 201: FeedbackResponse }
++      }
++    },
++    async (request, reply) => {
++      const feedback = await createFeedback(app.db, request.auth.companyId, {
++        authorId: request.auth.userId,
++        recipientId: request.body.recipientId,
++        body: request.body.body,
++        visibility: request.body.visibility ?? 'private'
++      })
++      if (!feedback) throw new NotFoundError('Recipient')
++      request.log.info({ feedbackId: feedback.id }, 'feedback created')
++      return reply.status(201).send(feedback)
++    }
++  )
++}

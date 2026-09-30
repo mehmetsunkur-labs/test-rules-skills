@@ -1,0 +1,85 @@
+diff --git a/migrations/003_add_goal_due_date.sql b/migrations/003_add_goal_due_date.sql
+new file mode 100644
+index 0000000..dd193fd
+--- /dev/null
++++ b/migrations/003_add_goal_due_date.sql
+@@ -0,0 +1 @@
++ALTER TABLE goals ADD COLUMN due_date date;
+diff --git a/src/server/repositories/goal-repository.ts b/src/server/repositories/goal-repository.ts
+index 98889c8..0f968b3 100644
+--- a/src/server/repositories/goal-repository.ts
++++ b/src/server/repositories/goal-repository.ts
+@@ -6,6 +6,7 @@ export interface Goal {
+   ownerId: string
+   title: string
+   progress: number
++  dueDate: string | null
+   createdAt: string
+ }
+ 
+@@ -15,10 +16,12 @@ interface GoalRow {
+   owner_id: string
+   title: string
+   progress: number
++  due_date: string | null
+   created_at: Date
+ }
+ 
+-const COLUMNS = 'id, company_id, owner_id, title, progress, created_at'
++// due_date is cast to text so pg returns 'YYYY-MM-DD' instead of a timezone-shifted Date
++const COLUMNS = 'id, company_id, owner_id, title, progress, due_date::text AS due_date, created_at'
+ 
+ function toGoal(row: GoalRow): Goal {
+   return {
+@@ -27,6 +30,7 @@ function toGoal(row: GoalRow): Goal {
+     ownerId: row.owner_id,
+     title: row.title,
+     progress: row.progress,
++    dueDate: row.due_date,
+     createdAt: row.created_at.toISOString()
+   }
+ }
+diff --git a/src/server/routes/goals.test.ts b/src/server/routes/goals.test.ts
+index 03eb22c..0354943 100644
+--- a/src/server/routes/goals.test.ts
++++ b/src/server/routes/goals.test.ts
+@@ -21,6 +21,7 @@ const goalRow = {
+   owner_id: USER,
+   title: 'Ship v2',
+   progress: 40,
++  due_date: '2026-06-30',
+   created_at: new Date('2026-01-01T00:00:00Z')
+ }
+ 
+@@ -33,7 +34,18 @@ describe('GET /goals/:id', () => {
+       headers: { authorization: `Bearer ${USER}:${COMPANY_A}:employee` }
+     })
+     expect(res.statusCode).toBe(200)
+-    expect(res.json()).toMatchObject({ id: GOAL_ID, title: 'Ship v2' })
++    expect(res.json()).toMatchObject({ id: GOAL_ID, title: 'Ship v2', dueDate: '2026-06-30' })
++  })
++
++  it('returns null dueDate when the goal has no due date', async () => {
++    const app = await buildApp({ db: fakeDb([{ ...goalRow, due_date: null }]), logger: false })
++    const res = await app.inject({
++      method: 'GET',
++      url: `/goals/${GOAL_ID}`,
++      headers: { authorization: `Bearer ${USER}:${COMPANY_A}:employee` }
++    })
++    expect(res.statusCode).toBe(200)
++    expect(res.json()).toMatchObject({ id: GOAL_ID, dueDate: null })
+   })
+ 
+   it('returns 404 for a goal that belongs to another company', async () => {
+diff --git a/src/server/routes/goals.ts b/src/server/routes/goals.ts
+index bc61120..b7ea900 100644
+--- a/src/server/routes/goals.ts
++++ b/src/server/routes/goals.ts
+@@ -8,6 +8,7 @@ const Goal = Type.Object({
+   ownerId: Type.String({ format: 'uuid' }),
+   title: Type.String(),
+   progress: Type.Integer({ minimum: 0, maximum: 100 }),
++  dueDate: Type.Union([Type.String({ format: 'date' }), Type.Null()]),
+   createdAt: Type.String({ format: 'date-time' })
+ })
+ 

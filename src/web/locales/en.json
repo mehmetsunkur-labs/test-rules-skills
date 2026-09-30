@@ -1,0 +1,9 @@
+{
+  "common": { "loading": "Loading…" },
+  "goals": {
+    "listLabel": "Goals",
+    "empty": "No goals yet",
+    "loadError": "Could not load goals",
+    "progress": "Progress for {{title}}"
+  }
+}

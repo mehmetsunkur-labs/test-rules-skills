@@ -1,0 +1,110 @@
+diff --git a/src/web/components/FeedbackList.tsx b/src/web/components/FeedbackList.tsx
+new file mode 100644
+index 0000000..f32a356
+--- /dev/null
++++ b/src/web/components/FeedbackList.tsx
+@@ -0,0 +1,64 @@
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
++import { useTranslation } from 'react-i18next'
++import { apiFetch } from '../api/client.js'
++
++interface Feedback {
++  id: string
++  authorId: string
++  recipientId: string
++  body: string
++  visibility: 'private' | 'shared'
++  createdAt: string
++}
++
++export function FeedbackList({ recipientId }: { recipientId: string }) {
++  const { t, i18n } = useTranslation()
++  const queryClient = useQueryClient()
++  const queryKey = ['feedback', recipientId]
++
++  const feedback = useQuery({
++    queryKey,
++    queryFn: () => apiFetch<Feedback[]>(`/feedback?recipientId=${encodeURIComponent(recipientId)}`)
++  })
++
++  const deleteFeedback = useMutation({
++    mutationFn: (id: string) => apiFetch<void>(`/feedback/${encodeURIComponent(id)}`, { method: 'DELETE' }),
++    onSuccess: (_data, id) => {
++      queryClient.setQueryData<Feedback[]>(queryKey, (items) => items?.filter((item) => item.id !== id))
++      return queryClient.invalidateQueries({ queryKey })
++    }
++  })
++
++  if (feedback.isPending) return <p role="status">{t('common.loading')}</p>
++  if (feedback.isError) return <p role="alert">{t('feedback.loadError')}</p>
++  if (feedback.data.length === 0) return <p>{t('feedback.empty')}</p>
++
++  const dateFormat = new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium' })
++
++  return (
++    <>
++      {deleteFeedback.isError && <p role="alert">{t('feedback.deleteError')}</p>}
++      <ul aria-label={t('feedback.listLabel')}>
++        {feedback.data.map((item) => {
++          const isDeleting = deleteFeedback.isPending && deleteFeedback.variables === item.id
++          return (
++            <li key={item.id}>
++              <p>{item.body}</p>
++              <time dateTime={item.createdAt}>{dateFormat.format(new Date(item.createdAt))}</time>
++              <button
++                type="button"
++                onClick={() => {
++                  if (window.confirm(t('feedback.deleteConfirm'))) deleteFeedback.mutate(item.id)
++                }}
++                disabled={isDeleting}
++                aria-label={t('feedback.delete', { date: dateFormat.format(new Date(item.createdAt)) })}
++              >
++                {isDeleting ? t('feedback.deleting') : t('feedback.deleteButton')}
++              </button>
++            </li>
++          )
++        })}
++      </ul>
++    </>
++  )
++}
+diff --git a/src/web/locales/de.json b/src/web/locales/de.json
+index 4726e42..0d89028 100644
+--- a/src/web/locales/de.json
++++ b/src/web/locales/de.json
+@@ -5,5 +5,15 @@
+     "empty": "Noch keine Ziele",
+     "loadError": "Ziele konnten nicht geladen werden",
+     "progress": "Fortschritt für {{title}}"
++  },
++  "feedback": {
++    "listLabel": "Erhaltenes Feedback",
++    "empty": "Noch kein Feedback",
++    "loadError": "Feedback konnte nicht geladen werden",
++    "deleteButton": "Löschen",
++    "deleting": "Wird gelöscht…",
++    "delete": "Feedback vom {{date}} löschen",
++    "deleteConfirm": "Dieses Feedback löschen? Dies kann nicht rückgängig gemacht werden.",
++    "deleteError": "Feedback konnte nicht gelöscht werden"
+   }
+ }
+diff --git a/src/web/locales/en.json b/src/web/locales/en.json
+index 37598c5..c64dfa8 100644
+--- a/src/web/locales/en.json
++++ b/src/web/locales/en.json
+@@ -5,5 +5,15 @@
+     "empty": "No goals yet",
+     "loadError": "Could not load goals",
+     "progress": "Progress for {{title}}"
++  },
++  "feedback": {
++    "listLabel": "Feedback received",
++    "empty": "No feedback yet",
++    "loadError": "Could not load feedback",
++    "deleteButton": "Delete",
++    "deleting": "Deleting…",
++    "delete": "Delete feedback from {{date}}",
++    "deleteConfirm": "Delete this feedback? This cannot be undone.",
++    "deleteError": "Could not delete feedback"
+   }
+ }

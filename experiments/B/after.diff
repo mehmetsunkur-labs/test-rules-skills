@@ -1,0 +1,136 @@
+diff --git a/src/web/components/FeedbackList.tsx b/src/web/components/FeedbackList.tsx
+new file mode 100644
+index 0000000..f6227d2
+--- /dev/null
++++ b/src/web/components/FeedbackList.tsx
+@@ -0,0 +1,80 @@
++import { useState } from 'react'
++import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
++import { useTranslation } from 'react-i18next'
++import { apiFetch } from '../api/client.js'
++
++type FeedbackVisibility = 'private' | 'shared'
++
++interface Feedback {
++  id: string
++  body: string
++  visibility: FeedbackVisibility
++  createdAt: string
++}
++
++export function FeedbackList({ recipientId }: { recipientId: string }) {
++  const { t, i18n } = useTranslation()
++  const queryClient = useQueryClient()
++  const [confirmingId, setConfirmingId] = useState<string | null>(null)
++
++  const feedback = useQuery({
++    queryKey: ['feedback', recipientId],
++    queryFn: () => apiFetch<Feedback[]>(`/feedback?recipientId=${encodeURIComponent(recipientId)}`)
++  })
++
++  const remove = useMutation({
++    mutationFn: (id: string) => apiFetch<void>(`/feedback/${encodeURIComponent(id)}`, { method: 'DELETE' }),
++    onSuccess: () => {
++      setConfirmingId(null)
++      return queryClient.invalidateQueries({ queryKey: ['feedback', recipientId] })
++    }
++  })
++
++  if (feedback.isPending) return <p role="status">{t('common.loading')}</p>
++  if (feedback.isError) return <p role="alert">{t('feedback.loadError')}</p>
++  if (feedback.data.length === 0) return <p>{t('feedback.empty')}</p>
++
++  const dateFormat = new Intl.DateTimeFormat(i18n.language, { dateStyle: 'medium' })
++
++  return (
++    <>
++      {remove.isError && <p role="alert">{t('feedback.deleteError')}</p>}
++      <ul aria-label={t('feedback.listLabel')}>
++        {feedback.data.map((item) => {
++          const isDeleting = remove.isPending && remove.variables === item.id
++          return (
++            <li key={item.id}>
++              <p>{item.body}</p>
++              <p>
++                <time dateTime={item.createdAt}>{dateFormat.format(new Date(item.createdAt))}</time>
++                {' · '}
++                {t(`feedback.visibility.${item.visibility}`)}
++              </p>
++              {confirmingId === item.id ? (
++                <div role="group" aria-label={t('feedback.confirmDelete')}>
++                  <span>{t('feedback.confirmDelete')}</span>
++                  <button type="button" onClick={() => remove.mutate(item.id)} disabled={isDeleting}>
++                    {isDeleting ? t('feedback.deleting') : t('feedback.confirm')}
++                  </button>
++                  <button type="button" onClick={() => setConfirmingId(null)} disabled={isDeleting}>
++                    {t('feedback.cancel')}
++                  </button>
++                </div>
++              ) : (
++                <button
++                  type="button"
++                  onClick={() => {
++                    remove.reset()
++                    setConfirmingId(item.id)
++                  }}
++                >
++                  {t('feedback.delete')}
++                </button>
++              )}
++            </li>
++          )
++        })}
++      </ul>
++    </>
++  )
++}
+diff --git a/src/web/locales/de.json b/src/web/locales/de.json
+index 4726e42..16acdbd 100644
+--- a/src/web/locales/de.json
++++ b/src/web/locales/de.json
+@@ -5,5 +5,20 @@
+     "empty": "Noch keine Ziele",
+     "loadError": "Ziele konnten nicht geladen werden",
+     "progress": "Fortschritt für {{title}}"
++  },
++  "feedback": {
++    "listLabel": "Erhaltenes Feedback",
++    "empty": "Noch kein Feedback",
++    "loadError": "Feedback konnte nicht geladen werden",
++    "deleteError": "Feedback konnte nicht gelöscht werden",
++    "delete": "Löschen",
++    "confirmDelete": "Dieses Feedback löschen?",
++    "confirm": "Ja, löschen",
++    "cancel": "Abbrechen",
++    "deleting": "Wird gelöscht…",
++    "visibility": {
++      "private": "Privat",
++      "shared": "Geteilt"
++    }
+   }
+ }
+diff --git a/src/web/locales/en.json b/src/web/locales/en.json
+index 37598c5..c68f9f8 100644
+--- a/src/web/locales/en.json
++++ b/src/web/locales/en.json
+@@ -5,5 +5,20 @@
+     "empty": "No goals yet",
+     "loadError": "Could not load goals",
+     "progress": "Progress for {{title}}"
++  },
++  "feedback": {
++    "listLabel": "Feedback received",
++    "empty": "No feedback yet",
++    "loadError": "Could not load feedback",
++    "deleteError": "Could not delete feedback",
++    "delete": "Delete",
++    "confirmDelete": "Delete this feedback?",
++    "confirm": "Yes, delete",
++    "cancel": "Cancel",
++    "deleting": "Deleting…",
++    "visibility": {
++      "private": "Private",
++      "shared": "Shared"
++    }
+   }
+ }

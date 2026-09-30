@@ -1,0 +1,9 @@
+{
+  "common": { "loading": "Wird geladen…" },
+  "goals": {
+    "listLabel": "Ziele",
+    "empty": "Noch keine Ziele",
+    "loadError": "Ziele konnten nicht geladen werden",
+    "progress": "Fortschritt für {{title}}"
+  }
+}
