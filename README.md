@@ -2,6 +2,42 @@
 
 A test repo, **Pulse**, standing in for the kind of HR SaaS service I work on: TypeScript, Fastify + TypeBox, Postgres, React + TanStack Query, multi-tenant, employee PII. It contains 10 custom rules, one skill and one custom agent. The before/after examples come from real headless Claude Code runs, not made-up ones.
 
+## Submission summary
+
+I built a small test project in my team's typical stack: a multi-company HR app using TypeScript, Fastify, Postgres and React. I wrote **10 custom rules** for it. Three apply to every session (`CLAUDE.md`). The other seven are in `.claude/rules/` and only load when Claude works on the matching files. They cover:
+- strict TypeScript
+- input validation on every route
+- keeping each company's data separate
+- typed error handling
+- no personal data in logs
+- safe SQL and migrations that are only ever added
+- tests
+- React translations and accessibility
+- staying in scope
+- a "definition of done"
+
+I also added the **`add-endpoint` skill** and the **`rules-reviewer` custom agent**, which checks a diff against the rules.
+
+**Testing:** I ran the same four prompts headless in two copies of the repo, one with the rules and one without, and kept the diffs in `experiments/`.
+- **The baseline was already strong.** Clean example code set the patterns, and the model copied them without being told.
+- **The rules added team decisions the model couldn't work out from code:**
+  - a single function for who can view a record
+  - log record IDs only, and add new personal-data fields to the logger's hidden list
+  - keep anonymous feedback anonymous
+  - ask before adding a dependency
+  - regression tests and Conventional Commits
+  - Claude checking its own work with the reviewer agent
+- **The testing caught a bug in my own rules.** Two of them contradicted each other, and that made Claude return 403 instead of 404, which tells a colleague that private feedback exists. I fixed the wording, re-ran, and it returned 404.
+
+**Lessons:**
+- Rules should record team decisions, not generic advice.
+- Good example code is the strongest rule.
+- Test your rules like code.
+
+**Inspirations:**
+- awesome-cursorrules: TypeScript, TanStack Query v5, Vitest, PR Review, DevSecOps, Conventional Commits, Anti-Sycophancy.
+- skills.sh: obra/superpowers TDD and debugging, mattpocock code-review and writing-great-skills, Vercel React best practices.
+
 ## What's in the repo
 
 | Feature | File | Loaded when |
